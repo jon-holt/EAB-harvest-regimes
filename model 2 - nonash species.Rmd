@@ -1,0 +1,262 @@
+# Model 2: Non-ash species
+
+Load the matched data that we created in `matching.Rmd`.
+
+```{r}
+library(tidyverse)
+library(MCMCvis)
+library(rjags)
+library(R2jags)
+library(RColorBrewer)
+
+load("data/df_matched.RData.RData")
+```
+
+Create an ID variable.
+
+```{r}
+df_m$x <- as.numeric(rownames(df_m))
+```
+
+Replicate the data to incorporate weights.
+
+```{r}
+df_m$weights_round <- as.integer(round(df_m$weights, digits=1)*10)
+df_m <- df_m[rep(row.names(df_m), df_m$weights_round),]
+```
+
+Prepare the model data.
+
+```{r, echo=FALSE}
+# subset the data
+model_df <- subset(df_m, select = c(harvest_nonash, spAGB_MgHa_prev_nonash, percBAremv_nonash, EAB, inv_period, pop_den, MHHI))
+
+# ensure no missing values
+model_df <- model_df[complete.cases(model_df),]
+
+# scale variables
+model_df <- model_df %>%
+   mutate_at(c("pop_den", "MHHI"), funs(c(scale(.))))
+
+# make the model matrix
+X <- model.matrix(percBAremv_nonash ~ spAGB_MgHa_prev_nonash + EAB + pop_den + MHHI + inv_period, model_df)
+
+# intercept
+X[,1] <- rep(1, dim(X)[1])
+
+# response variable
+y <- model_df$percBAremv_nonash
+
+# n
+n <- length(y)
+
+# indicator variable (binary)
+z <- model_df$harvest_nonash 
+
+# the ones trick
+ones <- rep(1, n)
+
+# Beta distribution cannot handle ones
+y[y==1] <- 0.999
+```
+
+Write a JAGS model. This is a zero-inflated beta regression model. 
+
+```{r}
+cat( "model{
+
+  # For the ones trick
+  C <- 10000
+
+  for(i in 1:n){
+
+    # define the logistic regression model, where w is the annual probability of NOT harvesting
+    w[i] <- (1-j[i])^X[i,6]
+    logit(j[i]) <- zeta[i]
+    zeta[i] <- beta0 + beta1*X[i,2] + beta2*X[i,3] + beta3*X[i,4] + beta4*X[i,5]
+
+    # define the gamma regression model for the mean. 
+    eta[i] <- gamma0 + gamma1*X[i,2] + gamma2*X[i,3] + gamma3*X[i,4] + gamma4*X[i,5] 
+
+    # for readability, define the log-likelihood of the gamma here
+    logit(s[i]) <- eta[i]
+    logGamma[i] <- log(dbeta(y[i], r*s[i], r*(1-s[i])))
+
+    logLik[i] <- (1 - z[i]) * log(w[i]) + z[i] * ( log(1-w[i]) + logGamma[i])
+
+    Lik[i] <- exp(logLik[i])
+
+    # Use the ones trick
+    p[i] <- Lik[i] / C
+    
+   ones[i] ~ dbern(p[i]) 
+  }
+
+  # PRIORS
+  beta0 ~ dnorm(0, 0.01)
+  beta1 ~ dnorm(0, 0.01)
+  beta2 ~ dnorm(0, 0.01)
+  beta3 ~ dnorm(0, 0.01)
+  beta4 ~ dnorm(0, 0.01)
+
+  gamma0 ~ dnorm(0, 0.01)
+  gamma1 ~ dnorm(0, 0.01)
+  gamma2 ~ dnorm(0, 0.01)
+  gamma3 ~ dnorm(0, 0.01)
+  gamma4 ~ dnorm(0, 0.01)
+
+  shape ~ dunif(0, 10)
+  r ~ dgamma(0.1, 0.1)
+  
+}
+    ", fill=T, file="zero_inflated.txt"
+)
+
+rjags::load.module("glm")
+cutData   <- list(y = y, X = X, n = n, z = z, ones=ones)
+parNames <- c('beta0','beta1', 'beta2', 'beta3', 'beta4', 'gamma0', 'gamma1', 'gamma2', 'gamma3', 'gamma4', 'shape','r')
+
+grow_nonash <- jags(data=cutData, param=parNames, n.chains = 3,
+                n.iter=2000, n.burnin=200, model.file="zero_inflated.txt")
+```
+
+Next, generate predictions. 
+
+Since we inflated sample size by 10, we will scale the standard deviation by sqrt(10). This would be problematic if the priors were informative (since informative priors can be interpreted as sample size), but in our case, the priors are non-informative. So, we can scale the standard deviation post-hoc and rest assured that we are approximating the true value. 
+
+Probability of harvest:
+
+```{r}
+params <- MCMCsummary(grow_nonash,
+                      params = c('beta0','beta1', 'beta2', 'beta3', 'beta4','shape', 'r'),
+                      round = 3)
+
+params$sd_mod <- params$sd*sqrt(10)
+params$upper_mod <- params$mean+1.96*params$sd_mod
+params$lower_mod <- params$mean-1.96*params$sd_mod
+
+predictions <- data.frame(intercept = 1,
+                       fracAGB_ash = rep(seq(0, 100, length.out=100),2),
+                       EAB = c(rep(0,100), rep(1,100)),
+                       pop_den = 0,
+                       MHHI = 0,
+                       inv_period = 1)
+
+predictions$intercept <- params$mean[1]
+predictions$ABG_mean <- params$mean[2]
+predictions$EAB_mean <- params$mean[3]
+predictions$EAB_5CI <- params$lower_mod[3]
+predictions$EAB_95CI <- params$upper_mod[3]
+predictions$pop_den_mean <- params$mean[4]
+predictions$MHHI_mean <- params$mean[5]
+predictions$shape <- params$mean[6]
+
+for (i in 1:dim(predictions)[1]) {
+  predictions$zeta[i] <- predictions$intercept[i] +
+    predictions$ABG_mean[i]*predictions$fracAGB_ash[i] +
+    predictions$EAB_mean[i]*predictions$EAB[i] +
+    predictions$pop_den_mean[i]*predictions$pop_den[i] +
+    predictions$MHHI_mean[i]*predictions$MHHI[i]
+  
+  predictions$y[i] <- 1/(1+exp(-predictions$zeta[i]))
+  
+    predictions$zeta_5CI[i] <- predictions$intercept[i] +
+    predictions$ABG_mean[i]*predictions$fracAGB_ash[i] +
+    predictions$EAB_5CI[i]*predictions$EAB[i] +
+    predictions$pop_den_mean[i]*predictions$pop_den[i] +
+    predictions$MHHI_mean[i]*predictions$MHHI[i] 
+  
+  predictions$y_5CI[i] <- 1/(1+exp(-predictions$zeta_5CI[i]))
+  
+    predictions$zeta_95CI[i] <- predictions$intercept[i] +
+    predictions$ABG_mean[i]*predictions$fracAGB_ash[i] +
+    predictions$EAB_95CI[i]*predictions$EAB[i] +
+    predictions$pop_den_mean[i]*predictions$pop_den[i] +
+    predictions$MHHI_mean[i]*predictions$MHHI[i]
+  
+  predictions$y_95CI[i] <- 1/(1+exp(-predictions$zeta_95CI[i]))
+}
+
+df_plot <- predictions %>%
+  mutate(EAB = ifelse(EAB==1, "EAB detected", "EAB not detected"))
+
+ggplot(df_plot, aes(x=fracAGB_ash, y=y, group=EAB)) + geom_line(aes(color=EAB)) + 
+  geom_ribbon(aes(ymin=y_5CI, ymax=y_95CI), alpha=0.4) +
+  ylab("Annual probability of harvest") +
+  xlab("aboveground biomass (MgHa)") +
+  theme_minimal() + 
+  scale_color_brewer(palette = "Dark2")
+```
+
+Intensity of harvest:
+
+```{r}
+params <- MCMCsummary(grow_nonash,
+                      params = c('gamma0','gamma1', 'gamma2', 'gamma3', 'gamma4','shape', 'r'),
+                      round = 3)
+
+params$sd_mod <- params$sd*sqrt(10)
+params$upper_mod <- params$mean+1.96*params$sd_mod
+params$lower_mod <- params$mean-1.96*params$sd_mod
+
+predictions <- data.frame(intercept = 1,
+                       fracAGB_ash = rep(seq(0, 100, length.out=100),2),
+                       EAB = c(rep(0,100), rep(1,100)),
+                       pop_den = 0,
+                       MHHI = 0,
+                       inv_period = 1)
+
+predictions$intercept <- params$mean[1]
+predictions$ABG_mean <- params$mean[2]
+predictions$EAB_mean <- params$mean[3]
+predictions$EAB_5CI <- params$lower_mod[3]
+predictions$EAB_95CI <- params$upper_mod[3]
+predictions$pop_den_mean <- params$mean[4]
+predictions$MHHI_mean <- params$mean[5]
+predictions$shape <- params$mean[6]
+predictions$r <- params$mean[7]
+
+
+for (i in 1:dim(predictions)[1]) {
+  predictions$zeta[i] <- predictions$intercept[i] +
+    predictions$ABG_mean[i]*predictions$fracAGB_ash[i] +
+    predictions$EAB_mean[i]*predictions$EAB[i] +
+    predictions$pop_den_mean[i]*predictions$pop_den[i] +
+    predictions$MHHI_mean[i]*predictions$MHHI[i]
+  
+    predictions$s[i] <- 1/(1+exp(-predictions$zeta[i]))
+  predictions$y[i] <- qbeta(0.5, shape1 = predictions$r[i]*predictions$s[i], 
+                            shape2 = predictions$r[i]*(1-predictions$s[i]))*100
+  
+    predictions$zeta_5CI[i] <- predictions$intercept[i] +
+    predictions$ABG_mean[i]*predictions$fracAGB_ash[i] +
+    predictions$EAB_5CI[i]*predictions$EAB[i] +
+    predictions$pop_den_mean[i]*predictions$pop_den[i] +
+    predictions$MHHI_mean[i]*predictions$MHHI[i] 
+  
+      predictions$s[i] <- 1/(1+exp(-predictions$zeta_5CI[i]))
+  predictions$y_5CI[i] <- qbeta(0.5, shape1 = predictions$r[i]*predictions$s[i], 
+                            shape2 = predictions$r[i]*(1-predictions$s[i]))*100
+  
+    predictions$zeta_95CI[i] <- predictions$intercept[i] +
+    predictions$ABG_mean[i]*predictions$fracAGB_ash[i] +
+    predictions$EAB_95CI[i]*predictions$EAB[i] +
+    predictions$pop_den_mean[i]*predictions$pop_den[i] +
+    predictions$MHHI_mean[i]*predictions$MHHI[i]
+  
+  predictions$s[i] <- 1/(1+exp(-predictions$zeta_95CI[i]))
+  predictions$y_95CI[i] <- qbeta(0.5, shape1 = predictions$r[i]*predictions$s[i], 
+                            shape2 = predictions$r[i]*(1-predictions$s[i]))*100
+}
+
+df_plot <- predictions %>%
+  mutate(EAB = ifelse(EAB==1, "EAB detected", "EAB not detected"))
+
+ggplot(df_plot, aes(x=fracAGB_ash, y=y, group=EAB)) + geom_line(aes(color=EAB)) + 
+  geom_ribbon(aes(ymin=y_5CI, ymax=y_95CI), alpha=0.4) +
+  ylab("BA removed (%) ") +
+  xlab("aboveground biomass (MgHa)") +
+  theme_minimal() + 
+  scale_color_brewer(palette = "Dark2")
+```
+

@@ -1,0 +1,39 @@
+# Match the data.
+
+First, load the merged dataset. 
+
+```{r}
+library(tidyverse)
+library(MatchIt)
+load("data/df_merged.RData")
+```
+
+Then, match the data using the Genetic Matching algorithm. 
+
+```{r}
+# subset the data
+df <- df_merged %>%
+  select(pltID, YEAR, harvest_all, harvest_ash, harvest_nonash, spAGB_MgHa_prev_all, spAGB_MgHa_prev_ash, spAGB_MgHa_prev_nonash, fracAGB_ash, fracBAremv_ash, percBAremv_all, percBAremv_ash, percBAremv_nonash, EAB, inv_period, MHHI, pop_den, PC1, pop_den_pm2, BAA_ash_county, BAA_nonash_county)
+
+# ensure there are no missing values
+df_nomiss <- df[complete.cases(df),]
+
+# set seed for reproducibility
+set.seed(9)
+
+# matching
+mod_match <- MatchIt::matchit(EAB ~
+                                BAA_ash_county + BAA_nonash_county + pop_den_pm2 + PC1,
+          method = "genetic", data = df_nomiss, discard = "both", reestimate = T, pop.size=dim(df_nomiss)[1])
+
+# assess the output
+s.out_genetic <- summary(mod_match, standardize = T)
+plot(s.out_genetic, interactive=F)
+summary(mod_match, standardize = T)
+
+# save a matched set
+df_m <- MatchIt::match.data(mod_match)
+
+save(df_m, file = "data/df_matched.RData")
+```
+

@@ -1,0 +1,47 @@
+model{
+
+  # For the ones trick
+  C <- 10000
+
+  for(i in 1:n){
+
+    # define the logistic regression model, where w is the annual probability of NOT harvesting
+    w[i] <- (1-j[i])^X[i,6]
+    logit(j[i]) <- zeta[i]
+    zeta[i] <- beta0 + beta1*X[i,2] + beta2*X[i,3] + beta3*X[i,4] + beta4*X[i,5]
+
+    # define the gamma regression model for the mean. 
+    eta[i] <- gamma0 + gamma1*X[i,2] + gamma2*X[i,3] + gamma3*X[i,4] + gamma4*X[i,5] 
+
+    # for readability, define the log-likelihood of the gamma here
+    logit(s[i]) <- eta[i]
+    logGamma[i] <- log(dbeta(y[i], r*s[i], r*(1-s[i])))
+
+    logLik[i] <- (1 - z[i]) * log(w[i]) + z[i] * ( log(1-w[i]) + logGamma[i])
+
+    Lik[i] <- exp(logLik[i])
+
+    # Use the ones trick
+    
+    p[i] <- Lik[i] / C
+   ones[i] ~ dbern(p[i]) 
+  }
+
+  # PRIORS
+  beta0 ~ dnorm(0, 0.01)
+  beta1 ~ dnorm(0, 0.01)
+  beta2 ~ dnorm(0, 0.01)
+  beta3 ~ dnorm(0, 0.01)
+  beta4 ~ dnorm(0, 0.01)
+
+  gamma0 ~ dnorm(0, 0.01)
+  gamma1 ~ dnorm(0, 0.01)
+  gamma2 ~ dnorm(0, 0.01)
+  gamma3 ~ dnorm(0, 0.01)
+  gamma4 ~ dnorm(0, 0.01)
+
+  shape ~ dunif(0, 10)
+  r ~ dgamma(0.1, 0.1)
+  
+}
+    

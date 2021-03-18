@@ -1,0 +1,84 @@
+We need to match the data again for the diameter analysis because we only want to consider trees for which the diameter is non-missing. So, we first select the trees for which diameter is non-missing. Then, we match the data (using the same routine as in the `matching.Rmd` file). After matching, we will compare tree diameters. 
+
+First, load the merged dataset. 
+
+```{r}
+library(tidyverse)
+library(MatchIt)
+library(weights)
+load("data/df_merged.RData")
+```
+
+Then, match the data using the Genetic Matching algorithm. 
+
+```{r}
+df <- df_lagged %>%
+  select(pltID, YEAR, spDIAremv_all, spDIAremv_ash, spDIAremv_nonash, EAB, PC1, pop_den_pm2, BAA_ash_county, BAA_nonash_county, 
+         spDIAprev_ash, spDIAprev_nonash)
+
+# ensure there are no missing values
+df_nomiss <- df[complete.cases(df),]
+
+# set seed for reproducibility
+set.seed(9)
+
+# matching
+mod_match_dia <- MatchIt::matchit(EAB ~
+                                BAA_ash_county + BAA_nonash_county + pop_den_pm2 + PC1
+                                + spDIAprev_ash + spDIAprev_nonash,
+          method = "genetic", data = df_nomiss, discard = "both", reestimate = T, pop.size=dim(df_nomiss)[1])
+
+# assess the output
+s.out_dia <- summary(mod_match_dia, standardize = T)
+plot(s.out_dia, interactive=F)
+summary(mod_match_dia, standardize = T)
+
+# save a matched set
+df_m_dia <- MatchIt::match.data(mod_match_dia)
+
+save(df_m_dia, file = "data/df_matched_dia.RData")
+```
+
+Weighted t-test.
+
+```{r}
+# ash species
+wtd.t.test(x=df_m_dia$spDIAremv_ash[df_m_dia$EAB==0],
+           y=df_m_dia$spDIAremv_ash[df_m_dia$EAB==1],
+           weight = df_m_dia$weights[df_m_dia$EAB==0],
+           weighty= df_m_dia$weights[df_m_dia$EAB==1],
+           bootse=T)
+
+# non-ash species
+wtd.t.test(x=df_m_dia$spDIAremv_nonash[df_m_dia$EAB==0],
+           y=df_m_dia$spDIAremv_nonash[df_m_dia$EAB==1],
+           weight = df_m_dia$weights[df_m_dia$EAB==0],
+           weighty= df_m_dia$weights[df_m_dia$EAB==1],
+           bootse=T)
+```
+
+Boxplots.
+
+```{r}
+load("data/df_matched_dia.RData")
+
+df_m_dia %>%
+  select(EAB, spDIAremv_ash, spDIAremv_nonash) %>%
+  mutate(EAB = ifelse(EAB==1, "EAB", "no EAB")) %>%
+  rename(`Ash species` = spDIAremv_ash,
+         `Non-ash species` = spDIAremv_nonash) %>%
+  pivot_longer(c("Ash species", "Non-ash species"), names_to = "species", values_to = "diameter") %>%
+  ggplot(aes(x=EAB, y=diameter, fill=EAB)) + geom_boxplot() +
+  facet_wrap(~species) +
+  ylab("harvest diameter (cm)") +
+  xlab("") +
+  theme_minimal() +
+  scale_fill_manual(values = c("no EAB" = "#66c2a5",
+                               "EAB" = "#fc8d62")) +
+  theme(legend.title = element_blank(),
+      legend.text = element_text(size=10),
+      strip.text = element_text(size = 10),
+      axis.title.y = element_text(size=10),
+      axis.title.x = element_text(size=10),
+      axis.text.x = element_text(size=10))
+```
