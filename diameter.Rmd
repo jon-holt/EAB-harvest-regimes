@@ -1,4 +1,6 @@
-We need to match the data again for the diameter analysis because we only want to consider trees for which the diameter is non-missing. So, we first select the trees for which diameter is non-missing. Then, we match the data (using the same routine as in the `matching.Rmd` file). After matching, we will compare tree diameters. 
+# Harvest diameter
+
+We need to match the data again for the diameter analysis because we must only consider trees for which the diameter is non-missing. So, we first select the trees for which diameter is non-missing, then we match the data using the same routine as in `matching.Rmd`. After matching, we will compare tree diameters. 
 
 First, load the merged dataset. 
 
@@ -6,12 +8,14 @@ First, load the merged dataset.
 library(tidyverse)
 library(MatchIt)
 library(weights)
+
 load("data/df_merged.RData")
 ```
 
 Then, match the data using the Genetic Matching algorithm. 
 
 ```{r}
+# subset the data
 df <- df_lagged %>%
   select(pltID, YEAR, spDIAremv_all, spDIAremv_ash, spDIAremv_nonash, EAB, PC1, pop_den_pm2, BAA_ash_county, BAA_nonash_county, 
          spDIAprev_ash, spDIAprev_nonash)
@@ -39,7 +43,7 @@ df_m_dia <- MatchIt::match.data(mod_match_dia)
 save(df_m_dia, file = "data/df_matched_dia.RData")
 ```
 
-Weighted t-test.
+Weighted t-test to infer statistical significance.
 
 ```{r}
 # ash species
@@ -57,7 +61,7 @@ wtd.t.test(x=df_m_dia$spDIAremv_nonash[df_m_dia$EAB==0],
            bootse=T)
 ```
 
-Boxplots.
+Boxplots to visualize the differences in diameter.
 
 ```{r}
 load("data/df_matched_dia.RData")
